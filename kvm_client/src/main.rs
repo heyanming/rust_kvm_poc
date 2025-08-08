@@ -1,10 +1,10 @@
 // host/src/main.rs
-//! 捕获本机鼠标事件，通过 TCP 发送到 client。（鼠标移动 + 左键）
+//! Client：捕获本机输入，通过 TCP 发送到 Server。
 use anyhow::{Context, Result};
 use clap::Parser;
-use kvm_core::{InputEvent, MouseButton, encode};
-use tokio::{net::TcpStream, io::AsyncWriteExt};
+use kvm_core::{encode, InputEvent, MouseButton};
 use std::sync::{Arc, Mutex};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -16,10 +16,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    println!("🔌 connecting to {} ...", args.connect);
-    let stream = TcpStream::connect(&args.connect).await
+    println!("🔌 Client connecting to {} ...", args.connect);
+    let stream = TcpStream::connect(&args.connect)
+        .await
         .with_context(|| format!("connect to {}", args.connect))?;
-    println!("✅ connected.");
+    println!("✅ Client connected.");
 
     let stream = Arc::new(Mutex::new(stream));
     let stream_clone = stream.clone();
@@ -42,23 +43,36 @@ async fn main() -> Result<()> {
     };
 
     println!("🖱  start listening mouse (rdev)...");
-    if let Err(e) = rdev::listen(callback) { eprintln!("listen error: {:?}", e); }
+    if let Err(e) = rdev::listen(callback) {
+        eprintln!("client capture error: {:?}", e);
+    }
     Ok(())
 }
 
 fn map_event(ev: rdev::Event) -> Option<InputEvent> {
-    use rdev::{EventType, Button};
+    use rdev::EventType;
     match ev.event_type {
-        EventType::MouseMove { x, y } => Some(InputEvent::MouseMove { x: x as i32, y: y as i32 }),
-        EventType::ButtonPress(btn) => map_button(btn).map(|b| InputEvent::MouseButton { button: b, down: true }),
-        EventType::ButtonRelease(btn) => map_button(btn).map(|b| InputEvent::MouseButton { button: b, down: false }),
+        EventType::MouseMove { x, y } => Some(InputEvent::MouseMove {
+            x: x as i32,
+            y: y as i32,
+        }),
+        EventType::ButtonPress(btn) => map_button(btn).map(|b| InputEvent::MouseButton {
+            button: b,
+            down: true,
+        }),
+        EventType::ButtonRelease(btn) => map_button(btn).map(|b| InputEvent::MouseButton {
+            button: b,
+            down: false,
+        }),
         _ => None,
     }
 }
 fn map_button(btn: rdev::Button) -> Option<MouseButton> {
     use rdev::Button::*;
     Some(match btn {
-        Left => MouseButton::Left, Right => MouseButton::Right, Middle => MouseButton::Middle,
-        Unknown(code) => MouseButton::Other(code as u8), _ => return None,
+        Left => MouseButton::Left,
+        Right => MouseButton::Right,
+        Middle => MouseButton::Middle,
+        Unknown(code) => MouseButton::Other(code as u8),
     })
 }

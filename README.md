@@ -8,10 +8,10 @@
 - `client/`：接收（tokio TCP 服务端）+ 注入（enigo）
 
 ## 使用
-### 启动 client（被控制端）
-cargo run -p client -- --listen 0.0.0.0:50051
-### 启动 host（主控端）
-cargo run -p host -- --connect 192.168.1.23:50051
+### 启动 client（Server（被控制端））
+cargo run -p kvm_server -- --listen 0.0.0.0:50051
+### 启动 host（Client（主控端））
+cargo run -p kvm_client -- --connect 192.168.1.79:50051
 
 > macOS 需授予“输入监控/辅助功能”权限；Windows 可能需管理员权限。
 > 目前用绝对坐标，未处理多屏/DPI，后续迭代。
