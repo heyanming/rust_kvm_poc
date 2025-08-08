@@ -1,0 +1,8 @@
+# Rust
+/target/
+/**/target/
+**/*.rlib
+**/*.rmeta
+
+# macOS
+.DS_Store
