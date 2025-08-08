@@ -1,20 +1,21 @@
-// client/src/main.rs
-//! Server：监听 TCP，接收事件并在本机注入。
-//! Server：监听 TCP，接收事件并在本机注入。
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use enigo::Mouse; // 让 move_mouse / button 可用
+use enigo::Mouse; // bring trait into scope
 use enigo::{Button as EnigoBtn, Coordinate, Direction, Enigo, Settings};
-use kvm_core::{decode, InputEvent, MouseButton};
+use kvm_core::{now_millis, InputEvent, MouseButton};
 use std::sync::mpsc;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 
 #[derive(Parser, Debug)]
+#[command(about = "KVM Server (receiver): listen, receive and inject events")]
 struct Args {
     /// 监听地址，例如 0.0.0.0:50051
     #[arg(long, default_value = "0.0.0.0:50051")]
     listen: String,
+
+    /// 开启调试日志
+    #[arg(long, default_value_t = false)]
+    debug: bool,
 }
 
 #[tokio::main]
@@ -24,16 +25,16 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(&args.listen)
         .await
         .with_context(|| format!("bind {}", args.listen))?;
-    println!("🖥️  Server listening on {}", args.listen);
+    eprintln!("🖥️  Server listening on {}", args.listen);
 
     loop {
         let (mut sock, peer) = listener.accept().await?;
-        println!("🔗 Client connected from {}", peer);
+        eprintln!("🔗 Client connected from {}", peer);
 
-        // 用 mpsc 把 InputEvent 发送给注入线程（拥有 Enigo）
-        let (tx, rx) = mpsc::channel::<InputEvent>();
+        let (tx, rx) = mpsc::channel::<(u64, u128, InputEvent)>();
+        let debug = args.debug;
 
-        // 注入线程（阻塞线程）——持有 Enigo，循环处理事件
+        // 注入线程：持有 Enigo，不在 tokio 任务里（Enigo 不是 Send）
         std::thread::spawn(move || {
             let settings = Settings::default();
             let mut enigo = match Enigo::new(&settings) {
@@ -43,15 +44,24 @@ async fn main() -> Result<()> {
                     return;
                 }
             };
-            for ev in rx {
-                if let Err(e) = handle_event(&mut enigo, ev) {
+            for (seq, ts, event) in rx {
+                let now = now_millis();
+                let latency = now.saturating_sub(ts);
+                if debug {
+                    eprintln!(
+                        "🖥️  [SERVER] recv seq={} ts={} now={} latency={}ms event={:?}",
+                        seq, ts, now, latency, event
+                    );
+                }
+                if let Err(e) = handle_event(&mut enigo, event) {
                     eprintln!("inject error: {e}");
                 }
             }
-            println!("🧵 injector thread exit for {}", peer);
+            eprintln!("🧵 injector thread exit for {}", peer);
         });
 
-        // 异步读取 socket，解码后把事件发给注入线程
+        // 异步读取 + 解帧 + 解码
+        let tx_task = tx.clone();
         tokio::spawn(async move {
             let mut len_buf = [0u8; 4];
             let mut payload = vec![];
@@ -68,14 +78,15 @@ async fn main() -> Result<()> {
                     eprintln!("read payload error: {e}");
                     break;
                 }
-                if let Some(ev) = decode(&payload) {
-                    if tx.send(ev).is_err() {
-                        // 注入线程已退出
-                        break;
+
+                if let Some(env) = kvm_core::decode_env(&payload) {
+                    // 把 (seq, ts, event) 交给注入线程
+                    if tx_task.send((env.seq, env.ts_millis, env.event)).is_err() {
+                        break; // 注入线程退出
                     }
                 }
             }
-            println!("❌ Client disconnected {}", peer);
+            eprintln!("❌ Client disconnected {}", peer);
         });
     }
 }
